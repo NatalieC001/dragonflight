@@ -1,21 +1,16 @@
 using UnityEngine;
-
+//attached to items in the scene
 public class EnvironmentTag : MonoBehaviour
 {
     public enum TagType
     {
-        Cover,
-        HardCover,
-        Chokepoint,
-        Pillar,
-        Cliff,
-        SpiritAnchor,
-        ObservationLoop,
-        EscapeStart,
-        ToppleObject,
-        ElementalConduit,
-
-        // Add more tag types as needed
+        SoftCover, // shootable cover - both player and dragon can damage
+        HardCover, //object player/dragon and minions use that cant be toppled
+        Chokepoint, //tackticle areas the dragon uses strateically fo form waves (palyer needs to bait the dragon - shooting at crystal, damaging minions to break its concentration as mass waves for player are hard to defeat
+        SpiritAnchor, //floor that dragon can breath dark spirits onto to block player sight and lessen mobility
+        ObservationLoop, //spline around health crystal
+        EscapeStart,   //spline start
+        ToppleObject,  //dragon knocks over box
 
     }
 
