@@ -1,9 +1,9 @@
 using UnityEngine;
 
 /// <summary>
-/// The core Health and Phase 'Brain' for an advanced Boss creature.
-/// It monitors health and battle state, and commands the BaseBossMovement
-/// to make intelligent evasion choices when threatened.
+/// This component now acts purely as the "Body" of the Dragon.
+/// It holds stats (health, resistances) and reports when it gets hit to the Brain.
+/// It NO LONGER makes decisions about whether to evade, attack, or retreat.
 /// </summary>
 [RequireComponent(typeof(BaseBossMovement))]
 public class BossCreature : MonoBehaviour
@@ -24,37 +24,15 @@ public class BossCreature : MonoBehaviour
     [Tooltip("If an arrow type isn't listed here, it deals standard 1.0x damage.")]
     public ElementalModifier[] elementalModifiers;
 
-    [Tooltip("The boss will attempt to jump to an escape route if taking rapid damage.")]
-    public float evasionDamageThreshold = 50f;
-
-    public enum BossPhase
-    {
-        Orchestrator, // Watching minions, charging on Crystal
-        Engaged,      // Actively fighting the player
-        Exhausted,    // Fleeing through environment to recharge
-        Recharging    // Back on Observation spline, regaining stamina
-    }
-
-    [Header("Battle State")]
-    public BossPhase currentPhase = BossPhase.Orchestrator;
-
-    [Header("Energy System")]
-    [Tooltip("How much stamina the boss has for attacking before it must retreat.")]
-    public float maxStamina = 100f;
-    [Tooltip("How fast stamina drains while attacking.")]
-    public float staminaDrainRate = 10f;
-    [Tooltip("How fast stamina recovers while on the observation spline.")]
-    public float staminaRechargeRate = 15f;
-    private float currentStamina;
-
     [Header("Anatomy Tracking")]
     [Tooltip("Dynamically found on Awake. Used as the origin point for breath attacks or projectiles.")]
     public Transform mouthTransform { get; private set; }
 
-    private BaseBossMovement movementSystem;
     private CreatureStatusEffects statusEffects;
-    private float recentDamageAccumulator = 0f;
-    private float damageDecayTimer = 0f;
+    private BaseBossMovement movementSystem;
+
+    // The "Brain" that makes decisions when this "Body" takes damage
+    private IDragonBrain brain;
 
     // Injected by WaveSpawner to explicitly report Boss death progression
     private WaveSpawner waveSpawner;
@@ -66,12 +44,15 @@ public class BossCreature : MonoBehaviour
 
     private void Awake()
     {
-        movementSystem = GetComponent<BaseBossMovement>();
         statusEffects = GetComponent<CreatureStatusEffects>();
+        movementSystem = GetComponent<BaseBossMovement>();
+        brain = GetComponent<IDragonBrain>();
         currentHealth = maxHealth;
-        currentStamina = maxStamina;
 
-      
+        if (brain == null)
+        {
+            Debug.LogWarning("[BossCreature] No IDragonBrain found on this GameObject! The Dragon will not react to damage.");
+        }
     }
 
     private void Start()
@@ -91,15 +72,12 @@ public class BossCreature : MonoBehaviour
             dragonBody.InitializeDragon(initialSpline);
         }
 
-        ChangePhase(BossPhase.Orchestrator);
-
         FindMouthTransform();
     }
 
     /// <summary>
     /// Dynamically searches all children (even deeply nested ones) for an object exactly named 'MouthTransform'.
     /// </summary>
-    /// <summary>
     private void FindMouthTransform()
     {
         if (mouthTransform != null) return; // Already assigned in Inspector
@@ -116,113 +94,6 @@ public class BossCreature : MonoBehaviour
         }
 
         Debug.LogWarning("[BossCreature] Could not find a child object named 'MouthTransform'. Breath attacks may fail!");
-    }
-
-
-
-    private void ChangePhase(BossPhase newPhase)
-    {
-        currentPhase = newPhase;
-        if (movementSystem != null)
-        {
-            movementSystem.OnPhaseChanged((int)newPhase);
-        }
-    }
-
-    public void EngagePlayer()
-    {
-        ChangePhase(BossPhase.Engaged);
-        Debug.Log("<color=magenta>[BossCreature] Phase 2: Dragon attacking player!</color>");
-        
-        // Movement system now handles freestyle logic via OnPhaseChanged hooks
-    }
-
-    private void Update()
-    {
-        // Handle Phase 2 Stamina Drain
-        if (currentPhase == BossPhase.Engaged)
-        {
-            currentStamina -= staminaDrainRate * Time.deltaTime;
-            if (currentStamina <= 0)
-            {
-                currentStamina = 0;
-                EnterExhaustedPhase();
-            }
-        }
-        else if (currentPhase == BossPhase.Recharging)
-        {
-            // Regain stamina. Note: Health never heals to prevent infinite fights!
-            currentStamina += staminaRechargeRate * Time.deltaTime;
-            if (currentStamina >= maxStamina)
-            {
-                currentStamina = maxStamina;
-                Debug.Log("<color=green>[BossCreature] Stamina full! Diving back in to attack!</color>");
-                EngagePlayer();
-            }
-        }
-
-        // Decay the damage accumulator over time so the boss only evades
-        // burst damage, not slow, consistent pokes.
-        if (recentDamageAccumulator > 0)
-        {
-            damageDecayTimer += Time.deltaTime;
-            if (damageDecayTimer > 3f) // Reset accumulator after 3 seconds of no damage
-            {
-                recentDamageAccumulator = 0f;
-                damageDecayTimer = 0f;
-            }
-        }
-    }
-
-    private void EnterExhaustedPhase()
-    {
-        ChangePhase(BossPhase.Exhausted);
-        Debug.Log("<color=cyan>[BossCreature] Phase 3: Dragon is exhausted! Fleeing to recharge!</color>");
-
-        // Permanently decay stamina so fights don't last forever
-        maxStamina *= 0.7f;
-        if (maxStamina < 20f) maxStamina = 20f; // Minimum stamina floor so it can still fight briefly
-
-        // Command the movement system to flee
-        if (movementSystem != null)
-        {
-            movementSystem.ForceImmediateEvasion();
-        }
-    }
-
-    /// <summary>
-    /// Called by the Movement System when the boss finishes an escape route
-    /// and returns to the observation deck.
-    /// </summary>
-    public void BeginRecharging()
-    {
-        ChangePhase(BossPhase.Recharging);
-        Debug.Log("<color=cyan>[BossCreature] Phase 4: Recharging stamina on the observation deck!</color>");
-    }
-
-    /// <summary>
-    /// Force the boss to begin evasive maneuvers immediately.
-    /// Called by other systems (e.g. DragonSegment) when the boss is hit and should react instantly.
-    /// </summary>
-    public void ForceImmediateEvasion()
-    {
-        Debug.Log("<color=red>[BossCreature] ForceImmediateEvasion: ordering immediate tactical evasion.</color>");
-
-        if (currentPhase == BossPhase.Orchestrator)
-        {
-            EngagePlayer();
-        }
-
-        if (movementSystem != null)
-        {
-            movementSystem.ForceImmediateEvasion();
-        }
-
-        // Reset accumulators so we don't re-trigger immediately
-        recentDamageAccumulator = 0f;
-        damageDecayTimer = 0f;
-
-        ChangePhase(BossPhase.Exhausted);
     }
 
     /// <summary>
@@ -275,30 +146,10 @@ public class BossCreature : MonoBehaviour
             return;
         }
 
-        // If the boss is hit while orchestrating, maybe it engages early!
-        if (currentPhase == BossPhase.Orchestrator)
+        // Pass the event to the Brain to decide how to react
+        if (brain != null)
         {
-            Debug.Log("<color=red>[BossCreature] You dared to shoot the boss while it was watching? It attacks early!</color>");
-            EngagePlayer();
-        }
-
-        // Tactical Decision Logic: Evaluate if we need to evade (only if engaged or exhausted)
-        if (currentPhase != BossPhase.Orchestrator)
-        {
-            EvaluateThreat(actualDamage);
-        }
-    }
-
-    private void EvaluateThreat(float damageTaken)
-    {
-        recentDamageAccumulator += damageTaken;
-        damageDecayTimer = 0f; // Reset decay
-
-        if (recentDamageAccumulator >= evasionDamageThreshold)
-        {
-            Debug.Log("<color=red>[BossCreature] Threat level high! Ordering tactical evasion.</color>");
-
-            ForceImmediateEvasion();
+            brain.OnDamageTaken(actualDamage);
         }
     }
 
@@ -325,6 +176,12 @@ public class BossCreature : MonoBehaviour
         else
         {
             Debug.LogWarning("[BossCreature] No WaveSpawner found — level progression cannot advance after boss death!");
+        }
+
+        // Notify the Brain that we died
+        if (brain != null)
+        {
+            brain.OnDeath();
         }
 
         // Stop movement
