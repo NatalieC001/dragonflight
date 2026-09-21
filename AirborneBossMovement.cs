@@ -8,6 +8,9 @@ using Dreamteck.Splines;
 /// 
 /// Movement is driven by the ROOT object's SplineFollower (assigned here),
 /// and SegmentedDragonManager's breadcrumb system drags all body segments behind it.
+///
+/// Note: This script is now purely a movement executor. Decisions on WHEN to escape
+/// or WHEN to observe are handed by IDragonBrain.
 /// </summary>
 public class AirborneBossMovement : BaseBossMovement
 {
@@ -20,6 +23,7 @@ public class AirborneBossMovement : BaseBossMovement
 
     private GameObject currentActivePath;
     private SplineFollower rootFollower;
+    private IDragonBrain brain;
 
     // --- Initialise once the scene is ready ---
     protected override void Awake()
@@ -34,20 +38,40 @@ public class AirborneBossMovement : BaseBossMovement
             Debug.Log($"[{gameObject.name}] AirborneBossMovement: Added SplineFollower to root.");
         }
 
+        brain = GetComponent<IDragonBrain>();
+
         // Start with following disabled — Start() will assign the first path.
         rootFollower.follow = false;
+
+        // Listen for when a path finishes so we can tell the brain
+        if (rootFollower != null)
+        {
+            rootFollower.onNode += OnNodePassed;
+        }
+    }
+
+    private void OnNodePassed(System.Collections.Generic.List<SplineTracer.NodeConnection> passed)
+    {
+        // Simple way to detect end of an open path (like an escape route)
+        if (rootFollower != null && !rootFollower.spline.isClosed && rootFollower.GetPercent() >= 0.99)
+        {
+            if (brain != null)
+            {
+                brain.OnPathFinished();
+            }
+        }
     }
 
     protected virtual void Start()
     {
-        InitialiseOnObservationPath();
+        // InitialiseOnObservationPath is now typically called by the Brain,
+        // but we can leave this here as a fallback or if the brain starts in Idle.
     }
 
     /// <summary>
-    /// Picks the first available Airborne observation path and snaps the root onto it.
-    /// Called once on Start so the dragon is immediately visible and moving.
+    /// Called by the Brain. Picks the first available Airborne observation path and snaps the root onto it.
     /// </summary>
-    private void InitialiseOnObservationPath()
+    public void StartObservationPath()
     {
         if (pathManager == null)
         {
@@ -69,6 +93,38 @@ public class AirborneBossMovement : BaseBossMovement
     }
 
     /// <summary>
+    /// Called by the Brain. Finds an escape route and follows it.
+    /// </summary>
+    public void StartEscapePath()
+    {
+        GameObject escapePath = FindNearestEscapeRoute(PathTypeTag.PathType.Airborne);
+        if (escapePath != null)
+        {
+            currentActivePath = escapePath;
+            AssignSplineAndFollow(currentActivePath, escapeSpeed);
+            Debug.Log($"[{gameObject.name}] Airborne movement jumping to escape route: {currentActivePath.name}");
+        }
+        else
+        {
+            Debug.LogWarning($"[{gameObject.name}] Tried to evade, but no Airborne escape routes found by BossPathManager!");
+            // Freestyle fallback
+            if (rootFollower != null) rootFollower.follow = false;
+            transform.Translate(Vector3.up * escapeSpeed * Time.deltaTime, Space.World);
+        }
+    }
+
+    /// <summary>
+    /// Stops the SplineFollower entirely.
+    /// </summary>
+    public void StopMovement()
+    {
+        if (rootFollower != null)
+        {
+            rootFollower.follow = false;
+        }
+    }
+
+    /// <summary>
     /// Assigns a SplineComputer from the given path GameObject to the root SplineFollower and starts following.
     /// </summary>
     private void AssignSplineAndFollow(GameObject pathObj, float speed)
@@ -85,7 +141,18 @@ public class AirborneBossMovement : BaseBossMovement
 
         rootFollower.spline = splineComputer;
         rootFollower.followSpeed = speed;
-        rootFollower.wrapMode = SplineFollower.Wrap.Loop;
+
+        // Let the brain decide if it loops or not. Usually observation loops, escape doesn't.
+        // As a quick fix for the transition, we'll assume closed splines loop and open ones don't.
+        if (splineComputer.isClosed)
+        {
+             rootFollower.wrapMode = SplineFollower.Wrap.Loop;
+        }
+        else
+        {
+             rootFollower.wrapMode = SplineFollower.Wrap.Default;
+        }
+
         rootFollower.follow = true;
 
         // Also update the SegmentedDragonManager's internal spline reference so the breadcrumb
@@ -107,99 +174,32 @@ public class AirborneBossMovement : BaseBossMovement
             return;
         }
 
-        // Read phase from the BossCreature brain to drive movement decisions.
-        bool desiresToEscape = bossBrain != null &&
-            (bossBrain.currentPhase == BossCreature.BossPhase.Exhausted);
-
-        if (desiresToEscape)
+        // We no longer read BossPhase here. The Brain tells us what to do via methods.
+        // If we have an open path and we've reached the end, notify the brain (fallback if onNode doesn't catch it)
+        if (rootFollower != null && rootFollower.follow && rootFollower.spline != null && !rootFollower.spline.isClosed)
         {
-            ExecuteEscapeChoreography();
-        }
-        else
-        {
-            ExecuteObservationSpline();
+             if (rootFollower.GetPercent() >= 0.999)
+             {
+                 rootFollower.follow = false; // Stop moving past the end
+                 if (brain != null) brain.OnPathFinished();
+             }
         }
     }
 
-    // --- Observation (looping patrol path) ---
-
-    private void ExecuteObservationSpline()
-    {
-        // If we already have a path assigned and the follower is running, nothing to do.
-        if (currentActivePath != null && rootFollower != null && rootFollower.follow)
-        {
-            return;
-        }
-
-        // Otherwise pick a path and start following.
-        currentActivePath = GetObservationPath(PathTypeTag.PathType.Airborne);
-        if (currentActivePath != null)
-        {
-            AssignSplineAndFollow(currentActivePath, observationSpeed);
-            Debug.Log($"[{gameObject.name}] Resuming observation spline: {currentActivePath.name}");
-        }
-    }
-
-    // --- Escape choreography ---
-
-    private void ExecuteEscapeChoreography()
-    {
-        if (currentActivePath == null)
-        {
-            currentActivePath = FindNearestEscapeRoute(PathTypeTag.PathType.Airborne);
-        }
-
-        if (currentActivePath != null)
-        {
-            AssignSplineAndFollow(currentActivePath, escapeSpeed);
-        }
-        else
-        {
-            // Freestyle fallback: just fly upward if no escape route exists.
-            transform.Translate(Vector3.up * escapeSpeed * Time.deltaTime, Space.World);
-        }
-    }
-
-    // --- Forced immediate evasion (called by BossCreature when burst damage threshold hit) ---
+    // --- Forced immediate evasion (Legacy override) ---
 
     public override void ForceImmediateEvasion()
     {
-        GameObject escapePath = FindNearestEscapeRoute(PathTypeTag.PathType.Airborne);
-        if (escapePath != null)
-        {
-            currentActivePath = escapePath;
-            AssignSplineAndFollow(currentActivePath, escapeSpeed);
-            Debug.Log($"[{gameObject.name}] Airborne movement jumping to escape route: {currentActivePath.name}");
-        }
-        else
-        {
-            Debug.LogWarning($"[{gameObject.name}] Tried to evade, but no Airborne escape routes found by BossPathManager!");
-            // Freestyle fallback
-            if (rootFollower != null) rootFollower.follow = false;
-        }
+        // This is here to satisfy the base class, but shouldn't be called directly anymore.
+        StartEscapePath();
     }
 
-    // --- Phase change hook (called by BossCreature.ChangePhase) ---
+    // --- Phase change hook (Legacy override) ---
 
     public override void OnPhaseChanged(int newPhase)
     {
+        // We no longer use this. The Brain handles state.
         base.OnPhaseChanged(newPhase);
-
-        BossCreature.BossPhase phase = (BossCreature.BossPhase)newPhase;
-
-        switch (phase)
-        {
-            case BossCreature.BossPhase.Orchestrator:
-            case BossCreature.BossPhase.Recharging:
-                // Return to observation loop — pick a fresh path.
-                currentActivePath = null;
-                ExecuteObservationSpline();
-                break;
-
-            case BossCreature.BossPhase.Exhausted:
-                // ForceImmediateEvasion will be called separately by BossCreature.EnterExhaustedPhase.
-                break;
-        }
     }
 
     // --- Tether rubber-band ---
@@ -207,8 +207,6 @@ public class AirborneBossMovement : BaseBossMovement
     private void ApplyTetherRubberBand()
     {
         // Keep the dragon within the tether radius of the anchor.
-        if (bossBrain == null) return;
-
         SegmentedDragonManager dragonBody = GetComponent<SegmentedDragonManager>();
         if (dragonBody == null || !dragonBody.IsTethered) return;
 
